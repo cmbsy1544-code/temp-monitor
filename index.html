@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>항온항습 모니터</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/5.10.1/mqtt.min.js"></script>
+<style>
+  :root{
+    --bg:#0e1116;--panel:#171c24;--panel-2:#1f2630;--line:#2a323d;
+    --ink:#e8edf3;--ink-dim:#8c97a6;--temp:#ff7a45;--humid:#39a0ff;
+    --ok:#3fd07a;--bad:#ff5a6e;--warn:#ffc24b;--mono:'Courier New',ui-monospace,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Malgun Gothic',sans-serif;
+    -webkit-font-smoothing:antialiased}
+  body{min-height:100vh;padding:max(16px,env(safe-area-inset-top)) 16px 40px}
+  header{display:flex;align-items:center;justify-content:space-between;
+    gap:12px;max-width:1100px;margin:0 auto 22px;padding-top:6px}
+  .brand{display:flex;align-items:baseline;gap:12px}
+  .brand h1{font-size:20px;font-weight:800;letter-spacing:-.3px}
+  .brand .sub{font-size:12px;color:var(--ink-dim);font-family:var(--mono)}
+  .status{display:flex;align-items:center;gap:8px;font-size:13px;
+    font-family:var(--mono);color:var(--ink-dim);background:var(--panel);
+    border:1px solid var(--line);padding:7px 12px;border-radius:999px;cursor:pointer;user-select:none}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--bad)}
+  .dot.on{background:var(--ok)}
+  .dot.live{animation:pulse 1.6s infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(63,208,122,.45)}
+    70%{box-shadow:0 0 0 8px rgba(63,208,122,0)}100%{box-shadow:0 0 0 0 rgba(63,208,122,0)}}
+  .grid{max-width:1100px;margin:0 auto;display:grid;gap:16px;
+    grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+  .card{background:linear-gradient(180deg,var(--panel),var(--panel-2));
+    border:1px solid var(--line);border-radius:18px;padding:20px 20px 16px;
+    position:relative;overflow:hidden}
+  .card h2{font-size:15px;font-weight:700;margin-bottom:2px}
+  .card .loc{font-size:12px;color:var(--ink-dim);font-family:var(--mono);margin-bottom:16px}
+  .stale-tag{position:absolute;top:16px;right:18px;font-size:10px;
+    font-family:var(--mono);color:var(--warn);opacity:0;transition:.3s}
+  .card.stale .stale-tag{opacity:1}
+  .card.stale{filter:grayscale(.35);opacity:.75}
+  .readings{display:flex;gap:14px}
+  .metric{flex:1;background:rgba(0,0,0,.18);border-radius:14px;padding:14px}
+  .metric .lab{font-size:12px;color:var(--ink-dim);display:flex;align-items:center;gap:6px;margin-bottom:6px}
+  .metric .lab i{width:8px;height:8px;border-radius:2px;display:inline-block}
+  .metric .val{font-size:34px;font-weight:800;line-height:1;font-variant-numeric:tabular-nums;letter-spacing:-1px}
+  .metric .val small{font-size:15px;font-weight:600;color:var(--ink-dim);margin-left:3px}
+  .metric.t .val{color:var(--temp)} .metric.t i{background:var(--temp)}
+  .metric.h .val{color:var(--humid)} .metric.h i{background:var(--humid)}
+  .spark{margin-top:14px;height:46px;width:100%;display:block}
+  .updated{margin-top:12px;font-size:11px;color:var(--ink-dim);font-family:var(--mono);text-align:right}
+  .sheet-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);backdrop-filter:blur(4px);
+    display:none;align-items:center;justify-content:center;padding:18px;z-index:50}
+  .sheet-bg.show{display:flex}
+  .sheet{background:var(--panel);border:1px solid var(--line);border-radius:20px;
+    width:100%;max-width:400px;padding:24px}
+  .sheet h3{font-size:17px;margin-bottom:4px}
+  .sheet p.note{font-size:12px;color:var(--ink-dim);margin-bottom:18px;line-height:1.5}
+  .field{margin-bottom:13px}
+  .field label{display:block;font-size:12px;color:var(--ink-dim);margin-bottom:5px;font-family:var(--mono)}
+  .field input{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:10px;
+    color:var(--ink);padding:11px 12px;font-size:14px;font-family:var(--mono)}
+  .field input:focus{outline:none;border-color:var(--humid)}
+  .btn{width:100%;border:none;border-radius:12px;padding:13px;font-size:15px;
+    font-weight:700;cursor:pointer;background:var(--humid);color:#04121f;margin-top:6px}
+  .btn.ghost{background:transparent;color:var(--ink-dim);border:1px solid var(--line);margin-top:10px;font-weight:600}
+  .err{color:var(--bad);font-size:12px;font-family:var(--mono);margin-top:10px;min-height:16px;text-align:center}
+  .save-row{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink-dim);margin-top:4px}
+  .save-row input{width:auto}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <h1>항온항습 모니터</h1>
+    <span class="sub" id="clock">--:--:--</span>
+  </div>
+  <div class="status" id="statusBtn">
+    <span class="dot" id="dot"></span>
+    <span id="statusTxt">연결 안 됨 · 설정</span>
+  </div>
+</header>
+
+<div class="grid" id="grid"></div>
+
+<div class="sheet-bg" id="sheet">
+  <div class="sheet">
+    <h3>HiveMQ 연결</h3>
+    <p class="note">웹 클라이언트로 접속됐던 계정을 그대로 넣으세요.</p>
+    <div class="field"><label>사용자 이름</label><input id="f_user" placeholder="cmbsy" autocomplete="off" /></div>
+    <div class="field"><label>비밀번호</label><input id="f_pass" type="password" placeholder="••••••••" autocomplete="off" /></div>
+    <div class="save-row">
+      <input type="checkbox" id="f_remember" checked />
+      <label for="f_remember" style="font-family:var(--mono)">이 기기에 저장 (개인 기기만)</label>
+    </div>
+    <div class="err" id="err"></div>
+    <button class="btn" id="connectBtn">연결하기</button>
+    <button class="btn ghost" id="closeBtn">닫기</button>
+  </div>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════
+   장치 설정 — 토픽을 바꾸려면 이 부분만 수정하세요.
+   순서: 이름, 위치, 온도토픽, 습도토픽
+   ═══════════════════════════════════════════════════════ */
+const DEVICES = [
+  { name:'항온항습기 1', loc:'입구',  topicT:'office/temp',   topicH:'office/humid'   },
+  { name:'항온항습기 2', loc:'창가',  topicT:'office/temp2',  topicH:'office/humid2'  },
+  { name:'4층 사무실',   loc:'사무실', topicT:'office4/temp',  topicH:'office4/humid'  },
+];
+
+/* 고정 연결 설정 (보통 바꿀 필요 없음) */
+const HOST='5fea2c39b6884c8485251090bc3f20e8.s1.eu.hivemq.cloud';
+const PORT='8884', PATH='/mqtt';
+/* 값이 이 시간(ms) 넘게 안 오면 '신호 끊김' 표시 (1분 주기 → 2.5분) */
+const STALE_MS=150000;
+
+DEVICES.forEach((d,i)=>d.id='dev'+i);
+const state={}; DEVICES.forEach(d=>state[d.id]={t:null,h:null,tHist:[],hHist:[],last:0});
+const topicMap={}; DEVICES.forEach(d=>{topicMap[d.topicT]={id:d.id,k:'t'};topicMap[d.topicH]={id:d.id,k:'h'};});
+
+const grid=document.getElementById('grid');
+DEVICES.forEach(d=>{
+  const c=document.createElement('div');
+  c.className='card'; c.id='card_'+d.id;
+  c.innerHTML=`
+    <span class="stale-tag">신호 끊김</span>
+    <h2>${d.name}</h2><div class="loc">${d.loc}</div>
+    <div class="readings">
+      <div class="metric t"><div class="lab"><i></i>온도</div>
+        <div class="val" id="t_${d.id}">--<small>°C</small></div></div>
+      <div class="metric h"><div class="lab"><i></i>습도</div>
+        <div class="val" id="h_${d.id}">--<small>%</small></div></div>
+    </div>
+    <svg class="spark" id="spk_${d.id}" preserveAspectRatio="none" viewBox="0 0 300 46"></svg>
+    <div class="updated" id="u_${d.id}">대기 중…</div>`;
+  grid.appendChild(c);
+});
+
+function spark(id,dataT,dataH){
+  const svg=document.getElementById('spk_'+id); if(!svg)return;
+  const W=300,H=46,pad=3;
+  function path(arr,color){
+    if(arr.length<2)return'';
+    const mn=Math.min(...arr),mx=Math.max(...arr),rng=(mx-mn)||1;
+    const step=(W-pad*2)/(arr.length-1);
+    const pts=arr.map((v,i)=>{const x=pad+step*i;const y=H-pad-((v-mn)/rng)*(H-pad*2);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;}).join(' ');
+    return `<polyline fill="none" stroke="${color}" stroke-width="1.8"
+      stroke-linejoin="round" stroke-linecap="round" points="${pts}"/>`;
+  }
+  svg.innerHTML=path(dataT,'#ff7a45')+path(dataH,'#39a0ff');
+}
+
+function onValue(id,kind,value){
+  const s=state[id]; if(!s)return;
+  const num=parseFloat(value); if(isNaN(num))return;
+  s.last=Date.now();
+  if(kind==='t'){s.t=num;s.tHist.push(num);if(s.tHist.length>40)s.tHist.shift();
+    document.getElementById('t_'+id).innerHTML=num.toFixed(1)+'<small>°C</small>';}
+  else{s.h=num;s.hHist.push(num);if(s.hHist.length>40)s.hHist.shift();
+    document.getElementById('h_'+id).innerHTML=num.toFixed(1)+'<small>%</small>';}
+  spark(id,s.tHist,s.hHist);
+  document.getElementById('u_'+id).textContent='업데이트 '+new Date().toLocaleTimeString('ko-KR');
+}
+
+setInterval(()=>{
+  document.getElementById('clock').textContent=new Date().toLocaleTimeString('ko-KR');
+  const now=Date.now();
+  DEVICES.forEach(d=>{
+    const s=state[d.id],card=document.getElementById('card_'+d.id); if(!card)return;
+    if(s.last&&now-s.last>STALE_MS)card.classList.add('stale');
+    else if(s.last)card.classList.remove('stale');
+  });
+},1000);
+
+let client=null;
+const dot=document.getElementById('dot'),statusTxt=document.getElementById('statusTxt');
+function setStatus(txt,live){statusTxt.textContent=txt;
+  dot.classList.toggle('on',!!live);dot.classList.toggle('live',!!live);}
+
+function connect(cfg){
+  const err=document.getElementById('err'); err.textContent='';
+  if(typeof mqtt==='undefined'){
+    err.textContent='mqtt.min.js 파일이 같은 폴더에 없습니다';
+    openSheet(); return;
+  }
+  if(client){ try{client.end(true);}catch(e){} client=null; }
+  const url='wss://'+HOST+':'+PORT+PATH;
+  setStatus('연결 중…',false);
+  try{
+    client=mqtt.connect(url,{
+      username:cfg.user, password:cfg.pass,
+      clientId:'web_'+Math.random().toString(16).slice(2,10),
+      clean:true, keepalive:30, connectTimeout:8000, reconnectPeriod:4000, protocolVersion:4
+    });
+  }catch(e){ err.textContent='주소 오류: '+e.message; openSheet(); return; }
+
+  client.on('connect',()=>{
+    setStatus('실시간 수신 중',true); closeSheet();
+    DEVICES.forEach(d=>{ client.subscribe(d.topicT); client.subscribe(d.topicH); });
+  });
+  client.on('message',(topic,payload)=>{
+    const map=topicMap[topic];
+    if(map) onValue(map.id,map.k,payload.toString());
+  });
+  client.on('error',(e)=>{ err.textContent='연결 오류: '+(e&&e.message?e.message:e); });
+  client.on('close',()=>{ setStatus('연결 끊김 · 재시도',false); });
+  client.on('reconnect',()=>{ setStatus('재연결 중…',false); });
+}
+
+const sheet=document.getElementById('sheet');
+function openSheet(){sheet.classList.add('show');}
+function closeSheet(){sheet.classList.remove('show');}
+document.getElementById('statusBtn').onclick=openSheet;
+document.getElementById('closeBtn').onclick=closeSheet;
+
+document.getElementById('connectBtn').onclick=()=>{
+  const cfg={
+    user:document.getElementById('f_user').value.trim(),
+    pass:document.getElementById('f_pass').value,
+  };
+  if(!cfg.user){document.getElementById('err').textContent='사용자 이름을 입력하세요';return;}
+  if(document.getElementById('f_remember').checked){
+    try{localStorage.setItem('hmcfg',JSON.stringify(cfg));}catch(e){}
+  }else{ try{localStorage.removeItem('hmcfg');}catch(e){} }
+  connect(cfg);
+};
+
+window.addEventListener('load',()=>{
+  let saved=null;
+  try{saved=JSON.parse(localStorage.getItem('hmcfg')||'null');}catch(e){}
+  if(saved&&saved.user){
+    document.getElementById('f_user').value=saved.user||'';
+    document.getElementById('f_pass').value=saved.pass||'';
+    connect(saved);
+  }else{
+    openSheet();
+  }
+});
+</script>
+</body>
+</html>
